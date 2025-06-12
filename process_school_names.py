@@ -1,4 +1,5 @@
 # %%
+from openai import OpenAI
 import langchain_core.prompts
 import re
 import pandas as pd
@@ -15,13 +16,6 @@ import random
 
 
 # %%
-def llm_response_to_json(content):
-    output = content
-    output = output.removeprefix("```json")
-    output = output.removesuffix("```")
-    return (output)
-
-
 def chunk_my_list(list_to_be_chunked, chunk_size):
     no_items = len(list_to_be_chunked)
     no_chunks = no_items//chunk_size + 1
@@ -48,7 +42,6 @@ data_raw = pd.read_csv(
     names=["school_raw"]
 )
 
-# %%
 max_chunk_size = 50
 
 data_raw["school_clean"] = data_raw["school_raw"].str.replace(
@@ -71,55 +64,81 @@ you are a helpful chatbot that is great at finding contact details. You will be 
 
 # %%
 class llm_details_puller:
+    """A class for posting to and pulling from LLM"""
 
+    def __init__(self,
+                 model="gemini-2.0-flash",
+                 model_provider="google_genai",
+                 system_prompt="""
+you are a helpful chatbot that is great at finding contact details. You will be given a list of UK-based IELTS schools. Find the contact details of each and return in JSON format. Return only for each item the "phone", "email" and "address" fields populated for that school. Return the JSON only. The JSON object MUST have the same number of items as the number of schools you were given as input.
+"""):
 
-def llm_give_me_the_details(
-        system_prompt,
-        list_chunks,
-        model="gemini-2.0-flash",
-        model_provider="google_genai",
-):
-    output_dfs = []
+        self.model = model
+        self.model_provider = model_provider
+        self.system_prompt = system_prompt
 
-    for chunk in list_chunks:
+    def llm_response_to_json(self, content):
+        output = content
+        output = output.removeprefix("```json")
+        output = output.removesuffix("```")
+        return output
+
+    def collect_single_list(self, items_list):
         model = init_chat_model(
-            model,
-            model_provider=model_provider
+            model=self.model,
+            model_provider=self.model_provider
         )
         prompt_template = prompts.ChatPromptTemplate(
             [
-                ("system", system_prompt),
+                ("system", self.system_prompt),
                 ("user", "{list_of_names}")
             ]
         )
-        prompt = prompt_template.invoke({"list_of_names": chunk})
+        prompt = prompt_template.invoke({"list_of_names": items_list})
         response = model.invoke(prompt)
-        json_response = llm_response_to_json(response.content)
+        json_response = self.llm_response_to_json(response.content)
         list_response = json.loads(json_response)
-        df = pd.DataFrame(list_response, index=chunk).reset_index(
-            names="name")
-        output_dfs.append(df)
+        df = pd.DataFrame(list_response, index=items_list).reset_index(
+            names="item_name")
+        return df
 
-    details_complete = pd.concat(
-        output_dfs).sort_values("name").set_index("name")
+    def collect_chunked_list(self, items_list):
+        output_dfs = []
+        i = 0
+        for chunk in items_list:
+            i = i + 1
+            print(f"collecting for chunk {i} of {len(items_list)}")
+            df = self.collect_single_list(chunk)
+            output_dfs.append(df)
 
-    return (details_complete)
+        details_complete = pd.concat(
+            output_dfs).sort_values("item_name").set_index("item_name")
+
+        return details_complete
 
 
 # %%
-school_details_gemini = llm_give_me_the_details(
-    system_prompt=system_prompt,
-    list_chunks=school_name_chunks,
+
+# ---------------- run through using gemini ---------------
+
+google_llm_class = llm_details_puller(
     model="gemini-2.0-flash",
     model_provider="google_genai",
 )
+school_details_gemini = google_llm_class.collect_chunked_list(
+    school_name_chunks)
+
+school_details_gemini.to_csv("IELTS Details - Gemini.csv")
 
 # %%
-school_details_openai = llm_give_me_the_details(
-    system_prompt=system_prompt,
-    list_chunks=school_name_chunks,
-    model="gpt-4o-mini",
+
+# ---------------- run through using chatGPT ---------------
+
+openai_llm_class = llm_details_puller(
+    model="o4-mini-2025-04-16",
     model_provider="openai",
 )
+school_details_openai = openai_llm_class.collect_chunked_list(
+    school_name_chunks)
 
-# %%
+school_details_openai.to_csv("IELTS Details - ChatGPT.csv")
